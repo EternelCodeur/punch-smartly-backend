@@ -6,118 +6,101 @@ use App\Http\Controllers\Controller;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
-use Firebase\JWT\JWT;
-use Firebase\JWT\Key;
 use Tymon\JWTAuth\Facades\JWTAuth;
 use Illuminate\Support\Facades\Cookie;
+use Tymon\JWTAuth\Exceptions\JWTException;
+use Illuminate\Support\Facades\Auth;
 
 class AuthController extends Controller
 {
-    /**
-     * POST /api/login { password }
-     * Authentifie en utilisant uniquement le mot de passe (code secret)
-     * et renvoie un JWT + l'utilisateur. Le mot de passe doit être unique par utilisateur.
-     */
     public function login(Request $request)
     {
-        $data = $request->validate([
-            'password' => ['required', 'string', 'min:6'],
+        // Validation des champs d'entrée
+        $request->validate([
+            'password' => 'required|string',
         ]);
 
-        // Protection simple anti brute-force
-        usleep(200 * 1000); // 200ms
-
-        $password = $data['password'];
-
-        // Parcourt des utilisateurs pour trouver la correspondance du hash
-        // NOTE: Pour des bases volumineuses, envisager de stocker un identifiant secondaire (secret unique)
-        $found = null;
-        foreach (User::cursor() as $u) {
-            if (Hash::check($password, $u->password)) {
-                $found = $u;
-                break;
+        try {
+            // Fixer la durée de vie du token à 7 jours (10080 minutes)
+            JWTAuth::factory()->setTTL(10080);
+            // Authentifier par mot de passe uniquement (PIN): rechercher l'utilisateur dont le hash correspond
+            $inputPassword = (string) $request->input('password');
+            $user = User::all()->first(function ($u) use ($inputPassword) {
+                return $u->password && \Illuminate\Support\Facades\Hash::check($inputPassword, $u->password);
+            });
+            if (!$user) {
+                return response()->json(['error' => 'Identifiants invalides'], 401);
             }
+            // Générer un token pour cet utilisateur
+            $token = JWTAuth::fromUser($user);
+        } catch (JWTException $e) {
+            return response()->json(['error' => 'Erreur serveur'], 500);
         }
 
-        if (!$found) {
-            return response()->json(['message' => 'Identifiants invalides'], 401);
-        }
-
-        $found->load('entreprise');
-
-        // Génération du JWT
-        $now = time();
-        $exp = $now + 60 * 60 * 8 * 24; // 8j
-        $issuer = config('app.url') ?: 'http://localhost';
-        // Résolution robuste du secret
-        $secret = env('JWT_SECRET');
-        if (!$secret) {
-            $appKey = config('app.key');
-            if ($appKey && str_starts_with($appKey, 'base64:')) {
-                $decoded = base64_decode(substr($appKey, 7));
-                $secret = $decoded ?: $appKey;
-            } else {
-                $secret = $appKey;
-            }
-        }
-        if (!$secret) {
-            return response()->json(['message' => 'Secret JWT introuvable (définissez JWT_SECRET ou APP_KEY).'], 500);
-        }
-
-        $payload = [
-            'iss' => $issuer,
-            'iat' => $now,
-            'exp' => $exp,
-            'sub' => $found->id,
-            'role' => $found->role,
-            'enterprise_id' => $found->enterprise_id,
+        // Récupérer l'utilisateur authentifié
+        // $user est déjà défini ci-dessus
+        // Utiliser le schéma de la requête pour déterminer le flag Secure
+        // En dev (HTTP), Secure doit être false afin que le cookie soit accepté par le navigateur
+        $secure = $request->isSecure();
+        $cookie = cookie('token', $token, 10080, '/', null, $secure, true, false, 'Lax');
+        // Déposer aussi un cookie lisible côté client avec les infos publiques de l'utilisateur
+        $publicUser = [
+            'id' => $user->id,
+            'nom' => $user->nom,
+            'role' => strtolower($user->role),
+            'enterprise_id' => $user->enterprise_id,
         ];
-
-        // Always generate token with firebase/php-jwt to avoid JWTSubject requirement
-        try {
-            $token = JWT::encode($payload, $secret, 'HS256');
-        } catch (\Throwable $e) {
-            return response()->json(['message' => 'JWT encode error: '.$e->getMessage()], 500);
-        }
-
-        // Send token as HttpOnly cookie (and return user json)
-        // In production, require cross-site cookie: SameSite=None; Secure
-        // In local/dev, keep Lax and set Secure based on the request scheme to avoid cookie drop on HTTP
-        $inProd = app()->environment('production');
-        $secure = $inProd ? true : $request->isSecure();
-        $sameSite = $inProd ? 'None' : 'Lax';
-        $cookie = cookie('ps_token', $token, (int)(($exp - $now) / 60), '/', null, $secure, true, false, $sameSite);
+        // httpOnly = false pour permettre la lecture depuis le frontend
+        $userCookie = cookie('user', json_encode($publicUser), 10080, '/', null, $secure, false, false, 'Lax');
         return response()->json([
-            'user' => $found,
-            'expires_in' => $exp - $now,
-        ])->cookie($cookie);
+            'success' => true,
+            'user' => [
+                'id' => $user->id,
+                'nom' => $user->nom,
+                'role' => strtolower($user->role), // renvoyer en minuscule
+                'enterprise_id' => $user->enterprise_id,
+            ],
+        ])->withCookie($cookie)->withCookie($userCookie);
     }
 
-    /**
-     * GET /api/me
-     */
-    public function me(Request $request)
+    public function me()
     {
         try {
-            $user = $request->user();
-            if (!$user) return response()->json(['message' => 'Unauthorized'], 401);
-            $user->load('entreprise');
-            return response()->json($user);
-        } catch (\Throwable $e) {
-            return response()->json(['message' => 'ME endpoint error: '.$e->getMessage()], 500);
+            // Essayer depuis l'en-tête Authorization si présent
+            try {
+                $user = JWTAuth::parseToken()->authenticate();
+                return response()->json($user);
+            } catch (\Exception $ignored) {
+                // Sinon, lire depuis le cookie 'token'
+                $token = request()->cookie('token');
+                if (!$token) {
+                    return response()->json(['error' => 'Non authentifié'], 401);
+                }
+                $user = JWTAuth::setToken($token)->authenticate();
+                return response()->json($user);
+            }
+        } catch (\Exception $e) {
+            return response()->json(['error' => 'Non authentifié'], 401);
         }
     }
 
-    /**
-     * POST /api/logout
-     * Clear JWT cookie
-     */
-    public function logout(Request $request)
+    public function logout()
     {
-        $inProd = app()->environment('production');
-        $secure = $inProd ? true : $request->isSecure();
-        $sameSite = $inProd ? 'None' : 'Lax';
-        $forget = Cookie::forget('ps_token', '/', null, $secure, true, false, $sameSite);
-        return response()->json(['ok' => true])->withCookie($forget);
+        try {
+            // Invalider le token du cookie si présent
+            $token = request()->cookie('token');
+            if ($token) {
+                JWTAuth::setToken($token)->invalidate();
+            } else {
+                // fallback: essaie via l'en-tête si disponible
+                $parsed = JWTAuth::getToken();
+                if ($parsed) JWTAuth::invalidate($parsed);
+            }
+        } catch (\Exception $e) {
+            // ignorer les erreurs d'invalidation
+        }
+        return response()->json(['message' => 'Déconnecté'])
+            ->withCookie(cookie()->forget('token'))
+            ->withCookie(cookie()->forget('user'));
     }
 }

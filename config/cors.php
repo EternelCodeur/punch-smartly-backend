@@ -21,10 +21,7 @@ return [
     // Frontend origins allowed to access the API (exact match, no wildcard)
     // Configure production URL(s) in .env: FRONTEND_URL, FRONTEND_URL_ALT
     'allowed_origins' => array_values(array_filter([
-        env('FRONTEND_URL'),
-        env('FRONTEND_URL_ALT'),
-        // Dev/local
-        'http://192.168.147.1:8080',
+        'https://archi-pointe.alwaysdata.net',
         'http://127.0.0.1:8080',
         'http://localhost:8080',
     ])),
