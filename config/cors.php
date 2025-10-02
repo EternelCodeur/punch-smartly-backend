@@ -18,13 +18,16 @@ return [
     // Allowed HTTP methods
     'allowed_methods' => ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
 
-    // Frontend origins allowed to access the API
-    // Add/remove origins here depending on your dev/prod environment
-    'allowed_origins' => [
+    // Frontend origins allowed to access the API (exact match, no wildcard)
+    // Configure production URL(s) in .env: FRONTEND_URL, FRONTEND_URL_ALT
+    'allowed_origins' => array_values(array_filter([
+        env('FRONTEND_URL'),
+        env('FRONTEND_URL_ALT'),
+        // Dev/local
         'http://192.168.147.1:8080',
         'http://127.0.0.1:8080',
         'http://localhost:8080',
-    ],
+    ])),
 
     'allowed_origins_patterns' => [],
 

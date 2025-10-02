@@ -81,9 +81,12 @@ class AuthController extends Controller
         }
 
         // Send token as HttpOnly cookie (and return user json)
-        // Use Secure flag only when the current request is HTTPS to avoid cookie drop in dev
-        $secure = $request->isSecure();
-        $cookie = cookie('ps_token', $token, (int)(($exp - $now) / 60), '/', null, $secure, true, false, 'Lax');
+        // In production, require cross-site cookie: SameSite=None; Secure
+        // In local/dev, keep Lax and set Secure based on the request scheme to avoid cookie drop on HTTP
+        $inProd = app()->environment('production');
+        $secure = $inProd ? true : $request->isSecure();
+        $sameSite = $inProd ? 'None' : 'Lax';
+        $cookie = cookie('ps_token', $token, (int)(($exp - $now) / 60), '/', null, $secure, true, false, $sameSite);
         return response()->json([
             'user' => $found,
             'expires_in' => $exp - $now,
@@ -111,7 +114,10 @@ class AuthController extends Controller
      */
     public function logout(Request $request)
     {
-        $forget = Cookie::forget('ps_token', '/', null, app()->environment('production'), true, false, 'Lax');
+        $inProd = app()->environment('production');
+        $secure = $inProd ? true : $request->isSecure();
+        $sameSite = $inProd ? 'None' : 'Lax';
+        $forget = Cookie::forget('ps_token', '/', null, $secure, true, false, $sameSite);
         return response()->json(['ok' => true])->withCookie($forget);
     }
 }
