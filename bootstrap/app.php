@@ -3,6 +3,7 @@
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
+use App\Http\Middleware\AttachJwtFromCookie;
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
@@ -16,6 +17,9 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->alias([
             'auth.jwt' => \App\Http\Middleware\JwtAuthenticate::class,
         ]);
+
+        // Ensure API requests pick JWT from 'token' cookie when Authorization header is absent
+        $middleware->appendToGroup('api', AttachJwtFromCookie::class);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         //
