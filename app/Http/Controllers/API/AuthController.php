@@ -18,11 +18,14 @@ class AuthController extends Controller
         // Validation des champs d'entrée
         $request->validate([
             'password' => 'required|string',
+            'remember' => 'sometimes|boolean',
         ]);
 
         try {
-            // Fixer la durée de vie du token à 7 jours (10080 minutes)
-            JWTAuth::factory()->setTTL(10080);
+            // TTL: 7 jours par défaut, 1 an si "remember" activé
+            $remember = (bool) $request->boolean('remember');
+            $minutes = $remember ? 525600 : 10080; // 365 jours vs 7 jours
+            JWTAuth::factory()->setTTL($minutes);
             // Authentifier par mot de passe uniquement (PIN): rechercher l'utilisateur dont le hash correspond
             $inputPassword = (string) $request->input('password');
             $user = User::all()->first(function ($u) use ($inputPassword) {
@@ -42,7 +45,7 @@ class AuthController extends Controller
         // Utiliser le schéma de la requête pour déterminer le flag Secure
         // En dev (HTTP), Secure doit être false afin que le cookie soit accepté par le navigateur
         $secure = $request->isSecure();
-        $cookie = cookie('token', $token, 10080, '/', null, $secure, true, false, 'Lax');
+        $cookie = cookie('token', $token, $minutes, '/', null, $secure, true, false, 'Lax');
         // Déposer aussi un cookie lisible côté client avec les infos publiques de l'utilisateur
         $publicUser = [
             'id' => $user->id,
@@ -51,7 +54,7 @@ class AuthController extends Controller
             'enterprise_id' => $user->enterprise_id,
         ];
         // httpOnly = false pour permettre la lecture depuis le frontend
-        $userCookie = cookie('user', json_encode($publicUser), 10080, '/', null, $secure, false, false, 'Lax');
+        $userCookie = cookie('user', json_encode($publicUser), $minutes, '/', null, $secure, false, false, 'Lax');
         return response()->json([
             'success' => true,
             'user' => [

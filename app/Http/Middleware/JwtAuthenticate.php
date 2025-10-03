@@ -26,8 +26,8 @@ class JwtAuthenticate
             $token = trim(substr($auth, 7));
         }
         if ($token === '') {
-            // Fallback: read from HttpOnly cookie
-            $token = (string) $request->cookie('ps_token', '');
+            // Fallback: read from HttpOnly cookie (must match AuthController cookie name)
+            $token = (string) $request->cookie('token', '');
         }
         if ($token === '') {
             return response()->json(['message' => 'Token manquant'], 401);
