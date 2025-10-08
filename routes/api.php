@@ -39,6 +39,8 @@ Route::middleware('auth.jwt')->group(function () {
     Route::post('attendances/check-in', [AttendanceController::class, 'checkIn']);
     Route::post('attendances/check-out', [AttendanceController::class, 'checkOut']);
     Route::get('attendances/summary/{employe_id}', [AttendanceController::class, 'summary']);
+    // Admin-only: marquer une arrivée "sur le terrain"
+    Route::post('attendances/admin/check-in-on-field', [AttendanceController::class, 'adminCheckInOnField']);
 
     // Absences
     Route::apiResource('absences', AbsenceController::class);

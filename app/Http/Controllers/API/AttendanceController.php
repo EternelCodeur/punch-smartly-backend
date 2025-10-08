@@ -5,6 +5,7 @@ namespace App\Http\Controllers\API;
 use App\Http\Controllers\Controller;
 use App\Models\Attendance;
 use App\Models\Employe;
+use App\Models\Absence;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
@@ -101,6 +102,61 @@ class AttendanceController extends Controller
     {
         $attendance->delete();
         return response()->json(null, 204);
+    }
+
+    /**
+     * Admin-only: mark/check-in an employee as "sur le terrain" for today or a provided date.
+     */
+    public function adminCheckInOnField(Request $request)
+    {
+        // Enforce admin role
+        $authRole = $request->attributes->get('auth_role');
+        if ($authRole !== 'admin') {
+            return response()->json(['message' => 'Unauthorized'], 403);
+        }
+
+        $data = $request->validate([
+            'employe_id' => ['required', 'integer', 'exists:employes,id'],
+            'date' => ['nullable', 'date'],
+        ]);
+
+        try {
+            $date = isset($data['date']) ? Carbon::parse($data['date'])->toDateString() : now()->toDateString();
+
+            $attendance = DB::transaction(function () use ($data, $date) {
+                $att = Attendance::firstOrCreate([
+                    'employe_id' => $data['employe_id'],
+                    'date' => $date,
+                ]);
+                if (!$att->check_in_at) {
+                    $att->check_in_at = now();
+                }
+                $att->on_field = true;
+                $att->save();
+                return $att;
+            });
+
+            // Update Employe daily flags similarly to normal check-in
+            try {
+                $emp = Employe::find($data['employe_id']);
+                if ($emp) {
+                    $today = Carbon::parse($date)->toDateString();
+                    if ($emp->attendance_date !== $today) {
+                        $emp->attendance_date = $today;
+                        $emp->arrival_signed = true;
+                        $emp->departure_signed = false;
+                    } else {
+                        $emp->arrival_signed = true;
+                    }
+                    $emp->save();
+                }
+            } catch (\Throwable $e) { /* ignore */ }
+
+            return response()->json($attendance);
+        } catch (\Throwable $e) {
+            report($e);
+            return response()->json(['message' => 'Erreur serveur lors du marquage sur le terrain'], 500);
+        }
     }
 
     public function checkIn(Request $request)
@@ -284,6 +340,13 @@ class AttendanceController extends Controller
             return Carbon::parse($r->date)->toDateString();
         });
 
+        // Charger les absences (congés) sur le mois
+        $absences = Absence::query()
+            ->where('employe_id', $employe_id)
+            ->whereBetween('date', [$start->toDateString(), $end->toDateString()])
+            ->get()
+            ->keyBy(function ($r) { return Carbon::parse($r->date)->toDateString(); });
+
         $perDay = [];
         $monthMins = 0;
 
@@ -302,13 +365,23 @@ class AttendanceController extends Controller
                 $monthMins += $mins;
             }
 
+            $leave = null;
+            $leaveStatus = null;
+            if (!$rec && ($a = $absences->get($dateStr))) {
+                $leave = true;
+                $leaveStatus = $a->status ?: 'conge';
+            }
+
             $perDay[] = [
                 'date' => $dateStr,
                 'in' => $in,
                 'out' => $out,
                 'inSignature' => $rec?->check_in_signature,
                 'outSignature' => $rec?->check_out_signature,
+                'onField' => (bool)($rec?->on_field ?? false),
                 'mins' => $mins,
+                'leave' => $leave,
+                'leaveStatus' => $leaveStatus,
             ];
         }
 

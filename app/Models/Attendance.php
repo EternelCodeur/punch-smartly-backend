@@ -18,6 +18,7 @@ class Attendance extends Model
         'date',
         'check_in_at',
         'check_in_signature',
+        'on_field',
         'check_out_at',
         'check_out_signature',
     ];
@@ -26,6 +27,7 @@ class Attendance extends Model
         'date' => 'date',
         'check_in_at' => 'datetime',
         'check_out_at' => 'datetime',
+        'on_field' => 'boolean',
     ];
 
     public function employe()
