@@ -49,7 +49,7 @@ class AbsenceController extends Controller
         ]);
 
         // Valeur par défaut pour status
-        $status = $data['status'] ?? 'conge';
+        $status = $data['status'];
         $reason = $data['reason'] ?? null;
 
         // Si plage fournie, créer une absence par jour
