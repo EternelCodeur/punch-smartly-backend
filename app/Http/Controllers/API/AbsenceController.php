@@ -9,7 +9,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Http\Request;
 
 /**
- * Contrôleur API pour la gestion des absences.
+ * ContrÃ´leur API pour la gestion des absences.
  */
 class AbsenceController extends Controller
 {
@@ -17,23 +17,41 @@ class AbsenceController extends Controller
     {
         $query = Absence::query()->with('employe');
 
-        if ($employeId = $request->query('employe_id')) {
-            $query->where('employe_id', $employeId);
+        // Filtre employé (cast explicite)
+        $employeId = $request->query('employe_id');
+        if ($employeId !== null && $employeId !== '') {
+            $query->where('employe_id', (int) $employeId);
         }
 
+        // Validation légère des dates (évite 500 si format invalide)
         $from = $request->query('from');
         $to = $request->query('to');
+        $month = $request->query('month');
 
-        if ($from && $to) {
-            $query->whereBetween('date', [$from, $to]);
+        try {
+            if ($from && $to) {
+                $fromD = Carbon::parse($from)->toDateString();
+                $toD = Carbon::parse($to)->toDateString();
+                if ($fromD > $toD) {
+                    return response()->json(['message' => 'from doit être <= to'], 422);
+                }
+                $query->whereBetween('absences.date', [$fromD, $toD]);
+            } elseif ($month) {
+                // Support mois (YYYY-MM)
+                $start = Carbon::createFromFormat('Y-m-d', $month . '-01')->startOfMonth();
+                $end = $start->copy()->endOfMonth();
+                $query->whereBetween('absences.date', [$start->toDateString(), $end->toDateString()]);
+            }
+        } catch (\Exception $e) {
+            return response()->json(['message' => 'Paramètres de dates invalides'], 422);
         }
 
         $perPage = (int)($request->query('per_page', 50));
         if ($perPage > 0) {
-            return response()->json($query->orderBy('date', 'desc')->paginate($perPage));
+            return response()->json($query->orderBy('absences.date', 'asc')->paginate($perPage));
         }
 
-        return response()->json($query->orderBy('date', 'desc')->get());
+        return response()->json($query->orderBy('absences.date', 'asc')->get());
     }
 
     public function store(Request $request)
@@ -48,16 +66,16 @@ class AbsenceController extends Controller
             'reason' => ['sometimes', 'nullable', 'string'],
         ]);
 
-        // Valeur par défaut pour status
+        // Valeur par dÃ©faut pour status
         $status = $data['status'];
         $reason = $data['reason'] ?? null;
 
-        // Si plage fournie, créer une absence par jour
+        // Si plage fournie, crÃ©er une absence par jour
         if (!empty($data['start_date']) && !empty($data['end_date'])) {
             $start = Carbon::parse($data['start_date'])->startOfDay();
             $end = Carbon::parse($data['end_date'])->startOfDay();
             if ($end->lt($start)) {
-                return response()->json(['message' => 'La date de fin doit être postérieure ou égale à la date de début'], 422);
+                return response()->json(['message' => 'La date de fin doit Ãªtre postÃ©rieure ou Ã©gale Ã  la date de dÃ©but'], 422);
             }
 
             $created = [];
@@ -76,7 +94,7 @@ class AbsenceController extends Controller
             return response()->json(array_map(fn ($a) => $a->toArray(), $created), 201);
         }
 
-        // Sinon, création pour une seule date
+        // Sinon, crÃ©ation pour une seule date
         if (empty($data['date'])) {
             return response()->json(['message' => 'date ou start_date/end_date requis'], 422);
         }
@@ -116,3 +134,4 @@ class AbsenceController extends Controller
         return response()->json(null, 204);
     }
 }
+

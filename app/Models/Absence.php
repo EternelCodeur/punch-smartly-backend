@@ -21,11 +21,12 @@ class Absence extends Model
     ];
 
     protected $casts = [
-        'date' => 'date',
+        // Force JSON serialization as 'YYYY-MM-DD' (no timezone time component)
+        'date' => 'date:Y-m-d',
     ];
 
     public function employe()
     {
-        return $this->belongsTo(Employe::class);
+        return $this->belongsTo(Employe::class, 'employe_id');
     }
 }
