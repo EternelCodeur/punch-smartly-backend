@@ -21,14 +21,30 @@ class AttendanceController extends Controller
     {
         $query = Attendance::query()->with('employe');
 
-        // Scope by enterprise for role=user
+        // Scope by role/tenant/enterprise
         $auth = $request->user();
-        $authRole = $request->attributes->get('auth_role');
+        $authRole = strtolower((string)$request->attributes->get('auth_role'));
         $authEnterpriseId = $request->attributes->get('auth_enterprise_id');
-        if ($auth && ($authRole === 'user') && $authEnterpriseId) {
-            $query->whereHas('employe', function($q) use ($authEnterpriseId) {
-                $q->where('entreprise_id', $authEnterpriseId);
-            });
+        $authTenantId = $request->attributes->get('auth_tenant_id');
+        if ($auth) {
+            if ($authRole === 'supertenant') {
+                // no restriction
+            } elseif ($authRole === 'superadmin' || $authRole === 'admin') {
+                // Superadmin/Admin: scope to same tenant across all enterprises
+                if ($authTenantId) {
+                    $query->whereHas('employe', function($q) use ($authTenantId) {
+                        $q->whereHas('entreprise', function($qq) use ($authTenantId) { $qq->where('tenant_id', $authTenantId); });
+                    });
+                } else {
+                    $query->whereRaw('1=0');
+                }
+            } elseif ($authRole === 'user') {
+                if ($authEnterpriseId) {
+                    $query->whereHas('employe', function($q) use ($authEnterpriseId) { $q->where('entreprise_id', $authEnterpriseId); });
+                } else {
+                    $query->whereRaw('1=0');
+                }
+            }
         }
 
         $employeId = (int)($request->query('employe_id') ?? $request->query('employee_id') ?? 0);
@@ -109,9 +125,11 @@ class AttendanceController extends Controller
      */
     public function adminCheckInOnField(Request $request)
     {
-        // Enforce admin role
-        $authRole = $request->attributes->get('auth_role');
-        if ($authRole !== 'admin') {
+        // Enforce role and tenant scoping (admin or superadmin)
+        $authRole = strtolower((string)$request->attributes->get('auth_role'));
+        $authEnterpriseId = $request->attributes->get('auth_enterprise_id');
+        $authTenantId = $request->attributes->get('auth_tenant_id');
+        if (!in_array($authRole, ['admin','superadmin'], true)) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
@@ -121,7 +139,28 @@ class AttendanceController extends Controller
         ]);
 
         try {
+            // Scope check for targeted employe
+            $target = Employe::with('entreprise')->find($data['employe_id']);
+            $authRole = strtolower((string)$request->attributes->get('auth_role'));
+            $authEnterpriseId = $request->attributes->get('auth_enterprise_id');
+            $authTenantId = $request->attributes->get('auth_tenant_id');
+            if ($authRole === 'admin' && (int)optional($target)->entreprise_id !== (int)$authEnterpriseId) {
+                return response()->json(['message' => 'Unauthorized'], 403);
+            }
+            if ($authRole === 'superadmin' && $authTenantId && (int)optional(optional($target)->entreprise)->tenant_id !== (int)$authTenantId) {
+                return response()->json(['message' => 'Unauthorized'], 403);
+            }
             $date = isset($data['date']) ? Carbon::parse($data['date'])->toDateString() : now()->toDateString();
+
+            // Scope check for targeted employe
+            $target = Employe::with('entreprise')->find($data['employe_id']);
+            if (!$target) { return response()->json(['message' => 'Employé introuvable'], 404); }
+            if ($authRole === 'admin' && (int)$target->entreprise_id !== (int)$authEnterpriseId) {
+                return response()->json(['message' => 'Unauthorized'], 403);
+            }
+            if ($authRole === 'superadmin' && $authTenantId && (int)optional($target->entreprise)->tenant_id !== (int)$authTenantId) {
+                return response()->json(['message' => 'Unauthorized'], 403);
+            }
 
             $attendance = DB::transaction(function () use ($data, $date) {
                 $att = Attendance::firstOrCreate([
@@ -318,8 +357,9 @@ class AttendanceController extends Controller
 
         // Scope by enterprise for role=user
         $auth = $request->user();
-        $authRole = $request->attributes->get('auth_role');
+        $authRole = strtolower((string)$request->attributes->get('auth_role'));
         $authEnterpriseId = $request->attributes->get('auth_enterprise_id');
+        $authTenantId = $request->attributes->get('auth_tenant_id');
 
         $records = Attendance::query()
             ->where('employe_id', $employe_id)
@@ -327,10 +367,17 @@ class AttendanceController extends Controller
             ->orderBy('date')
             ->get();
 
-        if ($auth && ($authRole === 'user') && $authEnterpriseId) {
-            // Verify the employee belongs to same enterprise to avoid leakage
-            $emp = Employe::find($employe_id);
-            if (!$emp || (int)($emp->entreprise_id) !== (int)$authEnterpriseId) {
+        // Verify scoping for all roles except supertenant
+        $emp = Employe::with('entreprise')->find($employe_id);
+        if (!$emp) { return response()->json(['message' => 'Employé introuvable'], 404); }
+        if (in_array($authRole, ['superadmin','admin'], true)) {
+            // Admin/Superadmin: employee must belong to same tenant
+            if ($authTenantId && (int)optional($emp->entreprise)->tenant_id !== (int)$authTenantId) {
+                return response()->json(['message' => 'Unauthorized'], 403);
+            }
+        } elseif ($authRole === 'user') {
+            // User: employee must belong to same enterprise
+            if ($authEnterpriseId && (int)$emp->entreprise_id !== (int)$authEnterpriseId) {
                 return response()->json(['message' => 'Unauthorized'], 403);
             }
         }

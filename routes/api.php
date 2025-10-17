@@ -9,6 +9,7 @@ use App\Http\Controllers\API\EmployeController;
 use App\Http\Controllers\API\AttendanceController;
 use App\Http\Controllers\API\AbsenceController;
 use App\Http\Controllers\API\TemporaryDepartureController;
+use App\Http\Controllers\API\TenantController;
 
 /*
 |--------------------------------------------------------------------------
@@ -24,12 +25,16 @@ use App\Http\Controllers\API\TemporaryDepartureController;
 // Public route: login
 Route::post('/login', [AuthController::class, 'login']);
 
-Route::apiResource('users', UserController::class);
-
 // Protected routes
 Route::middleware('auth.jwt')->group(function () {
-    Route::get('/me', [AuthController::class, 'me']);
+    // Public route: logout (controller will invalidate token if present and always clear cookies)
     Route::post('/logout', [AuthController::class, 'logout']);
+
+    // Tenants (supertenant only)
+    Route::apiResource('tenants', TenantController::class);
+    // Users
+    Route::apiResource('users', UserController::class);
+    Route::get('/me', [AuthController::class, 'me']);
     Route::apiResource('entreprises', EntrepriseController::class);
     // Employés
     Route::apiResource('employes', EmployeController::class);

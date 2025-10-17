@@ -51,6 +51,7 @@ class AuthController extends Controller
             'id' => $user->id,
             'nom' => $user->nom,
             'role' => strtolower($user->role),
+            'tenant_id' => $user->tenant_id,
             'enterprise_id' => $user->enterprise_id,
         ];
         // httpOnly = false pour permettre la lecture depuis le frontend
@@ -61,6 +62,7 @@ class AuthController extends Controller
                 'id' => $user->id,
                 'nom' => $user->nom,
                 'role' => strtolower($user->role), // renvoyer en minuscule
+                'tenant_id' => $user->tenant_id,
                 'enterprise_id' => $user->enterprise_id,
             ],
         ])->withCookie($cookie)->withCookie($userCookie);

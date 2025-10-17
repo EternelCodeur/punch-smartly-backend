@@ -20,7 +20,8 @@ class User extends Authenticatable implements JWTSubject
      */
     protected $fillable = [
         'nom',
-        'role', 
+        'role',
+        'tenant_id',
         'enterprise_id',
         'password',
     ];
@@ -51,6 +52,11 @@ class User extends Authenticatable implements JWTSubject
     public function entreprise()
     {
         return $this->belongsTo(Entreprise::class, 'enterprise_id');
+    }
+
+    public function tenant()
+    {
+        return $this->belongsTo(Tenant::class);
     }
 
     // JWTSubject implementation

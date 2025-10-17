@@ -17,12 +17,27 @@ class EmployeController extends Controller
     {
         $query = Employe::query()->with('entreprise');
 
-        // Scope by enterprise for role=user
+        // Role-based scoping
         $auth = $request->user();
-        $authRole = $request->attributes->get('auth_role');
+        $authRole = strtolower((string)($request->attributes->get('auth_role')));
         $authEnterpriseId = $request->attributes->get('auth_enterprise_id');
-        if ($auth && ($authRole === 'user') && $authEnterpriseId) {
-            $query->where('entreprise_id', $authEnterpriseId);
+        $authTenantId = $request->attributes->get('auth_tenant_id');
+        if ($auth) {
+            if ($authRole === 'supertenant') {
+                // no restriction
+            } elseif ($authRole === 'superadmin' || $authRole === 'admin') {
+                // Superadmin et Admin: voir tous les employés du même tenant (toutes entreprises confondues)
+                if ($authTenantId) {
+                    $query->whereHas('entreprise', function ($q) use ($authTenantId) { $q->where('tenant_id', $authTenantId); });
+                } else {
+                    // Sécurité: si pas de tenant_id connu, ne rien retourner
+                    $query->whereRaw('1=0');
+                }
+            } elseif ($authRole === 'user') {
+                // User reste limité à sa propre entreprise
+                if ($authEnterpriseId) { $query->where('entreprise_id', $authEnterpriseId); }
+                else { $query->whereRaw('1=0'); }
+            }
         }
 
         if ($search = $request->query('search')) {
@@ -34,9 +49,13 @@ class EmployeController extends Controller
         }
 
         $entrepriseId = $request->query('entreprise_id');
-        if ($auth && ($authRole === 'user') && $authEnterpriseId) {
-            // Override any client-provided filter for regular users
-            $entrepriseId = $authEnterpriseId;
+        if ($auth) {
+            if ($authRole === 'user' && $authEnterpriseId) {
+                $entrepriseId = $authEnterpriseId; // user: enforce own enterprise
+            }
+            if ($authRole === 'superadmin' && $authTenantId) {
+                // ensure any provided entreprise_id belongs to tenant implicitly via earlier whereHas
+            }
         }
         // Ne pas filtrer la liste principale par entreprise: on retourne tous les employés
 
@@ -47,7 +66,13 @@ class EmployeController extends Controller
         $normalizeToday = filter_var($request->query('normalize_today', 'true'), FILTER_VALIDATE_BOOLEAN);
         if ($normalizeToday) {
             $norm = Employe::query();
-            if ($entrepriseId) { $norm->where('entreprise_id', $entrepriseId); }
+            if ($entrepriseId) {
+                $norm->where('entreprise_id', $entrepriseId);
+            } elseif (in_array($authRole, ['admin','superadmin'], true) && $authTenantId) {
+                $norm->whereHas('entreprise', function ($q) use ($authTenantId) { $q->where('tenant_id', $authTenantId); });
+            } elseif ($authRole === 'user' && $authEnterpriseId) {
+                $norm->where('entreprise_id', $authEnterpriseId);
+            }
             $norm->where(function($q) use ($today) {
                 $q->whereNull('attendance_date')->orWhere('attendance_date', '!=', $today);
             })->update([
@@ -92,19 +117,25 @@ class EmployeController extends Controller
                 }
             }
         }
-          // Total global (toutes entreprises confondues)
-          $totalAll  = Employe::query()->count();
-        // Today counts endpoint within index when requested (no join)
+        // Today counts endpoint within index when requested (scoped by entreprise or tenant)
         if (filter_var($request->query('today_counts', 'false'), FILTER_VALIDATE_BOOLEAN)) {
             $scope = Employe::query();
-            if ($entrepriseId) { $scope->where('entreprise_id', $entrepriseId); }
+            if ($entrepriseId) {
+                $scope->where('entreprise_id', $entrepriseId);
+            } elseif (in_array($authRole, ['admin','superadmin'], true) && $authTenantId) {
+                $scope->whereHas('entreprise', function ($q) use ($authTenantId) { $q->where('tenant_id', $authTenantId); });
+            } elseif ($authRole === 'user' && $authEnterpriseId) {
+                $scope->where('entreprise_id', $authEnterpriseId);
+            }
+
+            $totalEmployees = (clone $scope)->count();
             $present = (clone $scope)->where('attendance_date', $today)->where('arrival_signed', true)->count();
-            $absent = (clone $scope)->where('attendance_date', $today)->where('arrival_signed', false)->count();
-            $left   = (clone $scope)->where('attendance_date', $today)->where('departure_signed', true)->count();
-          
+            $absent  = (clone $scope)->where('attendance_date', $today)->where('arrival_signed', false)->count();
+            $left    = (clone $scope)->where('attendance_date', $today)->where('departure_signed', true)->count();
+
             return response()->json([
                 'date' => $today,
-                'totalEmployees' => $totalAll,
+                'totalEmployees' => $totalEmployees,
                 'presentToday' => $present,
                 'absentToday' => $absent,
                 'leftToday' => $left,
@@ -121,13 +152,31 @@ class EmployeController extends Controller
 
     public function store(Request $request)
     {
+        $authRole = strtolower((string)($request->attributes->get('auth_role')));
+        $authEnterpriseId = $request->attributes->get('auth_enterprise_id');
+        $authTenantId = $request->attributes->get('auth_tenant_id');
+        if (!in_array($authRole, ['supertenant','superadmin','admin'], true)) {
+            return response()->json(['message' => 'Unauthorized'], 403);
+        }
         $data = $request->validate([
             'entreprise_id' => ['nullable', 'integer', 'exists:entreprises,id'],
             'first_name' => ['required', 'string', 'max:255'],
             'last_name' => ['required', 'string', 'max:255'],
             'position' => ['nullable', 'string', 'max:255'],
         ]);
-
+        // Admin: peut créer dans n'importe quelle entreprise de son tenant
+        if ($authRole === 'admin') {
+            if (array_key_exists('entreprise_id', $data) && !is_null($data['entreprise_id'])) {
+                $ok = \App\Models\Entreprise::where('id', $data['entreprise_id'])->where('tenant_id', $authTenantId)->exists();
+                if (!$ok) return response()->json(['message' => 'Entreprise hors tenant'], 403);
+            }
+            // si entreprise_id est null, on laisse tel quel (création sans entreprise possible)
+        }
+        // Superadmin: doit rester dans son tenant
+        if ($authRole === 'superadmin' && array_key_exists('entreprise_id', $data) && !is_null($data['entreprise_id'])) {
+            $ok = \App\Models\Entreprise::where('id', $data['entreprise_id'])->where('tenant_id', $authTenantId)->exists();
+            if (!$ok) return response()->json(['message' => 'Entreprise hors tenant'], 403);
+        }
         $employe = Employe::create($data);
         return response()->json($employe, 201);
     }
@@ -137,9 +186,16 @@ class EmployeController extends Controller
         $employe->load('entreprise');
         return response()->json($employe);
     }
-
     public function update(Request $request, Employe $employe)
     {
+        $authRole = strtolower((string)($request->attributes->get('auth_role')));
+        $authEnterpriseId = $request->attributes->get('auth_enterprise_id');
+        $authTenantId = $request->attributes->get('auth_tenant_id');
+        // Authorization: tenant-based
+        if (!in_array($authRole, ['supertenant','superadmin','admin'], true)) {
+            return response()->json(['message' => 'Unauthorized'], 403);
+        }
+
         $data = $request->validate([
             'entreprise_id' => ['sometimes', 'nullable', 'integer', 'exists:entreprises,id'],
             'first_name' => ['sometimes', 'required', 'string', 'max:255'],
@@ -147,13 +203,64 @@ class EmployeController extends Controller
             'position' => ['sometimes', 'nullable', 'string', 'max:255'],
         ]);
 
+        // Superadmin: employé doit rester dans son tenant; si changement d'entreprise, vérifier l'appartenance au tenant
+        if ($authRole === 'superadmin' && array_key_exists('entreprise_id', $data) && !is_null($data['entreprise_id'])) {
+            $ok = \App\Models\Entreprise::where('id', $data['entreprise_id'])->where('tenant_id', $authTenantId)->exists();
+            if (!$ok) return response()->json(['message' => 'Entreprise hors tenant'], 403);
+        }
+
+        // Admin: peut modifier n'importe quel employé du même tenant et le rattacher à n'importe quelle entreprise du tenant
+        if ($authRole === 'admin') {
+            // Si une entreprise cible est fournie, elle doit appartenir au tenant de l'admin
+            if (array_key_exists('entreprise_id', $data) && !is_null($data['entreprise_id'])) {
+                $ok = \App\Models\Entreprise::where('id', $data['entreprise_id'])->where('tenant_id', $authTenantId)->exists();
+                if (!$ok) return response()->json(['message' => 'Entreprise hors tenant'], 403);
+            }
+            // Résoudre le tenant effectif après mise à jour (entreprise fournie sinon entreprise actuelle)
+            $effectiveEnterpriseId = array_key_exists('entreprise_id', $data) ? $data['entreprise_id'] : $employe->entreprise_id;
+            if (!is_null($effectiveEnterpriseId)) {
+                $empTenant = \App\Models\Entreprise::where('id', $effectiveEnterpriseId)->value('tenant_id');
+                if ($authTenantId && (int)$empTenant !== (int)$authTenantId) {
+                    return response()->json(['message' => 'Unauthorized'], 403);
+                }
+            } else {
+                // Si aucune entreprise n'est définie (reste null), on autorise uniquement si l'employé actuel est déjà dans le même tenant
+                $currentTenant = optional($employe->entreprise)->tenant_id;
+                if ($currentTenant && $authTenantId && (int)$currentTenant !== (int)$authTenantId) {
+                    return response()->json(['message' => 'Unauthorized'], 403);
+                }
+            }
+        }
+
+        // Pour superadmin: s'assurer que l'employé modifié reste dans son tenant si aucune entreprise cible n'est fournie
+        if ($authRole === 'superadmin' && !array_key_exists('entreprise_id', $data)) {
+            $currentTenant = optional($employe->entreprise)->tenant_id;
+            if ($authTenantId && !is_null($currentTenant) && (int)$currentTenant !== (int)$authTenantId) {
+                return response()->json(['message' => 'Unauthorized'], 403);
+            }
+        }
         $employe->fill($data)->save();
         $employe->load('entreprise');
         return response()->json($employe);
     }
-
     public function destroy(Employe $employe)
     {
+        // Authorization like update
+        $authRole = strtolower((string)request()->attributes->get('auth_role'));
+        $authEnterpriseId = request()->attributes->get('auth_enterprise_id');
+        $authTenantId = request()->attributes->get('auth_tenant_id');
+        if ($authRole === 'admin' && (int)$employe->entreprise_id !== (int)$authEnterpriseId) {
+            return response()->json(['message' => 'Unauthorized'], 403);
+        }
+        if ($authRole === 'superadmin') {
+            $empTenant = optional($employe->entreprise)->tenant_id;
+            if ($authTenantId && (int)$empTenant !== (int)$authTenantId) {
+                return response()->json(['message' => 'Unauthorized'], 403);
+            }
+        }
+        if (!in_array($authRole, ['supertenant','superadmin','admin'], true)) {
+            return response()->json(['message' => 'Unauthorized'], 403);
+        }
         $employe->delete();
         return response()->json(null, 204);
     }

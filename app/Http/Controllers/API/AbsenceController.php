@@ -17,6 +17,30 @@ class AbsenceController extends Controller
     {
         $query = Absence::query()->with('employe');
 
+        // Role/tenant scoping
+        $authRole = strtolower((string)$request->attributes->get('auth_role'));
+        $authEnterpriseId = $request->attributes->get('auth_enterprise_id');
+        $authTenantId = $request->attributes->get('auth_tenant_id');
+        if ($authRole === 'supertenant') {
+            // no restriction
+        } elseif ($authRole === 'superadmin') {
+            if ($authTenantId) {
+                $query->whereHas('employe', function($q) use ($authTenantId) {
+                    $q->whereHas('entreprise', function($qq) use ($authTenantId) { $qq->where('tenant_id', $authTenantId); });
+                });
+            }
+        } elseif (in_array($authRole, ['admin','user'], true)) {
+            if ($authEnterpriseId) {
+                $query->whereHas('employe', function($q) use ($authEnterpriseId) {
+                    $q->where('entreprise_id', $authEnterpriseId);
+                });
+            } else {
+                $query->whereRaw('1=0');
+            }
+        } else {
+            $query->whereRaw('1=0');
+        }
+
         // Filtre employé (cast explicite)
         $employeId = $request->query('employe_id');
         if ($employeId !== null && $employeId !== '') {
@@ -66,7 +90,19 @@ class AbsenceController extends Controller
             'reason' => ['sometimes', 'nullable', 'string'],
         ]);
 
-        // Valeur par dÃ©faut pour status
+        // Scope check
+        $authRole = strtolower((string)$request->attributes->get('auth_role'));
+        $authEnterpriseId = $request->attributes->get('auth_enterprise_id');
+        $authTenantId = $request->attributes->get('auth_tenant_id');
+        if (!in_array($authRole, ['supertenant','superadmin','admin'], true)) {
+            return response()->json(['message' => 'Unauthorized'], 403);
+        }
+        $emp = \App\Models\Employe::with('entreprise')->find($data['employe_id']);
+        if (!$emp) return response()->json(['message' => 'Employé introuvable'], 404);
+        if ($authRole === 'admin' && (int)$emp->entreprise_id !== (int)$authEnterpriseId) return response()->json(['message' => 'Unauthorized'], 403);
+        if ($authRole === 'superadmin' && $authTenantId && (int)optional($emp->entreprise)->tenant_id !== (int)$authTenantId) return response()->json(['message' => 'Unauthorized'], 403);
+
+        // Valeur par défaut pour status
         $status = $data['status'];
         $reason = $data['reason'] ?? null;
 
@@ -118,6 +154,15 @@ class AbsenceController extends Controller
 
     public function update(Request $request, Absence $absence)
     {
+        // Scope check
+        $authRole = strtolower((string)$request->attributes->get('auth_role'));
+        $authEnterpriseId = $request->attributes->get('auth_enterprise_id');
+        $authTenantId = $request->attributes->get('auth_tenant_id');
+        $emp = \App\Models\Employe::with('entreprise')->find($absence->employe_id);
+        if ($authRole === 'admin' && (int)optional($emp)->entreprise_id !== (int)$authEnterpriseId) return response()->json(['message' => 'Unauthorized'], 403);
+        if ($authRole === 'superadmin' && $authTenantId && (int)optional(optional($emp)->entreprise)->tenant_id !== (int)$authTenantId) return response()->json(['message' => 'Unauthorized'], 403);
+        if (!in_array($authRole, ['supertenant','superadmin','admin'], true)) return response()->json(['message' => 'Unauthorized'], 403);
+
         $data = $request->validate([
             'status' => ['sometimes', 'nullable', 'string'],
             'reason' => ['sometimes', 'nullable', 'string'],
@@ -130,6 +175,15 @@ class AbsenceController extends Controller
 
     public function destroy(Absence $absence)
     {
+        // Scope check
+        $authRole = strtolower((string)request()->attributes->get('auth_role'));
+        $authEnterpriseId = request()->attributes->get('auth_enterprise_id');
+        $authTenantId = request()->attributes->get('auth_tenant_id');
+        $emp = \App\Models\Employe::with('entreprise')->find($absence->employe_id);
+        if ($authRole === 'admin' && (int)optional($emp)->entreprise_id !== (int)$authEnterpriseId) return response()->json(['message' => 'Unauthorized'], 403);
+        if ($authRole === 'superadmin' && $authTenantId && (int)optional(optional($emp)->entreprise)->tenant_id !== (int)$authTenantId) return response()->json(['message' => 'Unauthorized'], 403);
+        if (!in_array($authRole, ['supertenant','superadmin','admin'], true)) return response()->json(['message' => 'Unauthorized'], 403);
+
         $absence->delete();
         return response()->json(null, 204);
     }

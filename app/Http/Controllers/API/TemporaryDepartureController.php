@@ -27,6 +27,30 @@ class TemporaryDepartureController extends Controller
             ->orderBy('date', 'desc')
             ->orderBy('departure_time', 'desc');
 
+        // Role/tenant scoping
+        $authRole = strtolower((string)$request->attributes->get('auth_role'));
+        $authEnterpriseId = $request->attributes->get('auth_enterprise_id');
+        $authTenantId = $request->attributes->get('auth_tenant_id');
+        if ($authRole === 'supertenant') {
+            // no restriction
+        } elseif ($authRole === 'superadmin') {
+            if ($authTenantId) {
+                $q->whereHas('employe', function ($sub) use ($authTenantId) {
+                    $sub->whereHas('entreprise', function($qq) use ($authTenantId) { $qq->where('tenant_id', $authTenantId); });
+                });
+            }
+        } elseif (in_array($authRole, ['admin','user'], true)) {
+            if ($authEnterpriseId) {
+                $q->whereHas('employe', function ($sub) use ($authEnterpriseId) {
+                    $sub->where('entreprise_id', $authEnterpriseId);
+                });
+            } else {
+                $q->whereRaw('1=0');
+            }
+        } else {
+            $q->whereRaw('1=0');
+        }
+
         if (!empty($data['employe_id'])) {
             $q->where('employe_id', $data['employe_id']);
         }
@@ -47,6 +71,18 @@ class TemporaryDepartureController extends Controller
             'reason' => ['nullable', 'string'],
         ]);
 
+        // Scope check
+        $authRole = strtolower((string)$request->attributes->get('auth_role'));
+        $authEnterpriseId = $request->attributes->get('auth_enterprise_id');
+        $authTenantId = $request->attributes->get('auth_tenant_id');
+        if (!in_array($authRole, ['supertenant','superadmin','admin'], true)) {
+            return response()->json(['message' => 'Unauthorized'], 403);
+        }
+        $emp = \App\Models\Employe::with('entreprise')->find($data['employe_id']);
+        if (!$emp) return response()->json(['message' => 'Employé introuvable'], 404);
+        if ($authRole === 'admin' && (int)$emp->entreprise_id !== (int)$authEnterpriseId) return response()->json(['message' => 'Unauthorized'], 403);
+        if ($authRole === 'superadmin' && $authTenantId && (int)optional($emp->entreprise)->tenant_id !== (int)$authTenantId) return response()->json(['message' => 'Unauthorized'], 403);
+
         $today = now()->toDateString();
         $time = now()->format('H:i');
 
@@ -66,6 +102,15 @@ class TemporaryDepartureController extends Controller
             'signature' => ['required', 'string'],
             // 'date' => ['sometimes', 'date'], // si besoin de surcharger la date
         ]);
+
+        // Scope check by role
+        $authRole = strtolower((string)$request->attributes->get('auth_role'));
+        $authEnterpriseId = $request->attributes->get('auth_enterprise_id');
+        $authTenantId = $request->attributes->get('auth_tenant_id');
+        $emp = \App\Models\Employe::with('entreprise')->find($temporaryDeparture->employe_id);
+        if ($authRole === 'admin' && (int)optional($emp)->entreprise_id !== (int)$authEnterpriseId) return response()->json(['message' => 'Unauthorized'], 403);
+        if ($authRole === 'superadmin' && $authTenantId && (int)optional(optional($emp)->entreprise)->tenant_id !== (int)$authTenantId) return response()->json(['message' => 'Unauthorized'], 403);
+        if (!in_array($authRole, ['supertenant','superadmin','admin'], true)) return response()->json(['message' => 'Unauthorized'], 403);
 
         if ($temporaryDeparture->return_time) {
             return response()->json(['message' => 'Retour déjà enregistré'], 422);
@@ -129,6 +174,14 @@ class TemporaryDepartureController extends Controller
     // GET /api/temporary-departures/{temporaryDeparture}
     public function show(TemporaryDeparture $temporaryDeparture)
     {
+        // Scope check
+        $authRole = strtolower((string)request()->attributes->get('auth_role'));
+        $authEnterpriseId = request()->attributes->get('auth_enterprise_id');
+        $authTenantId = request()->attributes->get('auth_tenant_id');
+        $emp = \App\Models\Employe::with('entreprise')->find($temporaryDeparture->employe_id);
+        if ($authRole === 'admin' && (int)optional($emp)->entreprise_id !== (int)$authEnterpriseId) return response()->json(['message' => 'Unauthorized'], 403);
+        if ($authRole === 'superadmin' && $authTenantId && (int)optional(optional($emp)->entreprise)->tenant_id !== (int)$authTenantId) return response()->json(['message' => 'Unauthorized'], 403);
+        if (!in_array($authRole, ['supertenant','superadmin','admin','user'], true)) return response()->json(['message' => 'Unauthorized'], 403);
         return response()->json($temporaryDeparture->load('employe'));
     }
 
@@ -141,6 +194,15 @@ class TemporaryDepartureController extends Controller
             'departure_time' => ['sometimes', 'date_format:H:i'],
         ]);
 
+        // Scope check
+        $authRole = strtolower((string)$request->attributes->get('auth_role'));
+        $authEnterpriseId = $request->attributes->get('auth_enterprise_id');
+        $authTenantId = $request->attributes->get('auth_tenant_id');
+        $emp = \App\Models\Employe::with('entreprise')->find($temporaryDeparture->employe_id);
+        if ($authRole === 'admin' && (int)optional($emp)->entreprise_id !== (int)$authEnterpriseId) return response()->json(['message' => 'Unauthorized'], 403);
+        if ($authRole === 'superadmin' && $authTenantId && (int)optional(optional($emp)->entreprise)->tenant_id !== (int)$authTenantId) return response()->json(['message' => 'Unauthorized'], 403);
+        if (!in_array($authRole, ['supertenant','superadmin','admin'], true)) return response()->json(['message' => 'Unauthorized'], 403);
+
         $temporaryDeparture->fill($data)->save();
         return response()->json($temporaryDeparture->refresh()->load('employe'));
     }
@@ -148,6 +210,15 @@ class TemporaryDepartureController extends Controller
     // DELETE /api/temporary-departures/{temporaryDeparture}
     public function destroy(TemporaryDeparture $temporaryDeparture)
     {
+        // Scope check
+        $authRole = strtolower((string)request()->attributes->get('auth_role'));
+        $authEnterpriseId = request()->attributes->get('auth_enterprise_id');
+        $authTenantId = request()->attributes->get('auth_tenant_id');
+        $emp = \App\Models\Employe::with('entreprise')->find($temporaryDeparture->employe_id);
+        if ($authRole === 'admin' && (int)optional($emp)->entreprise_id !== (int)$authEnterpriseId) return response()->json(['message' => 'Unauthorized'], 403);
+        if ($authRole === 'superadmin' && $authTenantId && (int)optional(optional($emp)->entreprise)->tenant_id !== (int)$authTenantId) return response()->json(['message' => 'Unauthorized'], 403);
+        if (!in_array($authRole, ['supertenant','superadmin','admin'], true)) return response()->json(['message' => 'Unauthorized'], 403);
+
         $temporaryDeparture->delete();
         return response()->json(null, 204);
     }

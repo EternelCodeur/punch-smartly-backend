@@ -44,6 +44,7 @@ class JwtAuthenticate
                 // Derive attributes from user model to avoid claim mismatch
                 $request->attributes->set('auth_role', $user->role ?? null);
                 $request->attributes->set('auth_enterprise_id', $user->enterprise_id ?? null);
+                $request->attributes->set('auth_tenant_id', $user->tenant_id ?? null);
             } else {
                 // Fallback: firebase/php-jwt
                 $secret = env('JWT_SECRET');
@@ -71,6 +72,7 @@ class JwtAuthenticate
                 $request->setUserResolver(function () use ($user) { return $user; });
                 $request->attributes->set('auth_role', $decoded->role ?? ($user->role ?? null));
                 $request->attributes->set('auth_enterprise_id', $decoded->enterprise_id ?? ($user->enterprise_id ?? null));
+                $request->attributes->set('auth_tenant_id', $decoded->tenant_id ?? ($user->tenant_id ?? null));
             }
         } catch (\Throwable $e) {
             return response()->json(['message' => 'Token invalide ou expiré'], 401);
