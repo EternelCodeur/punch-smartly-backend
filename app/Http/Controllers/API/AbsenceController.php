@@ -23,13 +23,16 @@ class AbsenceController extends Controller
         $authTenantId = $request->attributes->get('auth_tenant_id');
         if ($authRole === 'supertenant') {
             // no restriction
-        } elseif ($authRole === 'superadmin') {
+        } elseif (in_array($authRole, ['superadmin','admin'], true)) {
+            // Admin & Superadmin: visibilité sur toutes les absences du tenant
             if ($authTenantId) {
                 $query->whereHas('employe', function($q) use ($authTenantId) {
                     $q->whereHas('entreprise', function($qq) use ($authTenantId) { $qq->where('tenant_id', $authTenantId); });
                 });
+            } else {
+                $query->whereRaw('1=0');
             }
-        } elseif (in_array($authRole, ['admin','user'], true)) {
+        } elseif ($authRole === 'user') {
             if ($authEnterpriseId) {
                 $query->whereHas('employe', function($q) use ($authEnterpriseId) {
                     $q->where('entreprise_id', $authEnterpriseId);
@@ -94,24 +97,33 @@ class AbsenceController extends Controller
         $authRole = strtolower((string)$request->attributes->get('auth_role'));
         $authEnterpriseId = $request->attributes->get('auth_enterprise_id');
         $authTenantId = $request->attributes->get('auth_tenant_id');
-        if (!in_array($authRole, ['supertenant','superadmin','admin'], true)) {
+        if (!in_array($authRole, ['supertenant','superadmin','admin','user'], true)) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
         $emp = \App\Models\Employe::with('entreprise')->find($data['employe_id']);
-        if (!$emp) return response()->json(['message' => 'Employé introuvable'], 404);
-        if ($authRole === 'admin' && (int)$emp->entreprise_id !== (int)$authEnterpriseId) return response()->json(['message' => 'Unauthorized'], 403);
-        if ($authRole === 'superadmin' && $authTenantId && (int)optional($emp->entreprise)->tenant_id !== (int)$authTenantId) return response()->json(['message' => 'Unauthorized'], 403);
+        if (!$emp) { return response()->json(['message' => 'Employé introuvable'], 404); }
+        // Admin/Superadmin: employee must belong to same tenant
+        if (in_array($authRole, ['superadmin','admin'], true)) {
+            if ($authTenantId && (int)optional($emp->entreprise)->tenant_id !== (int)$authTenantId) {
+                return response()->json(['message' => 'Unauthorized'], 403);
+            }
+        } elseif ($authRole === 'user') {
+            // User: employee must belong to same enterprise
+            if ($authEnterpriseId && (int)optional($emp)->entreprise_id !== (int)$authEnterpriseId) {
+                return response()->json(['message' => 'Unauthorized'], 403);
+            }
+        }
 
         // Valeur par défaut pour status
         $status = $data['status'];
         $reason = $data['reason'] ?? null;
 
-        // Si plage fournie, crÃ©er une absence par jour
+        // Si plage fournie, créer une absence par jour
         if (!empty($data['start_date']) && !empty($data['end_date'])) {
             $start = Carbon::parse($data['start_date'])->startOfDay();
             $end = Carbon::parse($data['end_date'])->startOfDay();
             if ($end->lt($start)) {
-                return response()->json(['message' => 'La date de fin doit Ãªtre postÃ©rieure ou Ã©gale Ã  la date de dÃ©but'], 422);
+                return response()->json(['message' => 'La date de fin doit être postérieure ou égale à la date de début'], 422);
             }
 
             $created = [];
@@ -130,7 +142,7 @@ class AbsenceController extends Controller
             return response()->json(array_map(fn ($a) => $a->toArray(), $created), 201);
         }
 
-        // Sinon, crÃ©ation pour une seule date
+        // Sinon, création pour une seule date
         if (empty($data['date'])) {
             return response()->json(['message' => 'date ou start_date/end_date requis'], 422);
         }
@@ -159,8 +171,11 @@ class AbsenceController extends Controller
         $authEnterpriseId = $request->attributes->get('auth_enterprise_id');
         $authTenantId = $request->attributes->get('auth_tenant_id');
         $emp = \App\Models\Employe::with('entreprise')->find($absence->employe_id);
-        if ($authRole === 'admin' && (int)optional($emp)->entreprise_id !== (int)$authEnterpriseId) return response()->json(['message' => 'Unauthorized'], 403);
-        if ($authRole === 'superadmin' && $authTenantId && (int)optional(optional($emp)->entreprise)->tenant_id !== (int)$authTenantId) return response()->json(['message' => 'Unauthorized'], 403);
+        if (in_array($authRole, ['superadmin','admin'], true)) {
+            if ($authTenantId && (int)optional(optional($emp)->entreprise)->tenant_id !== (int)$authTenantId) return response()->json(['message' => 'Unauthorized'], 403);
+        } elseif ($authRole === 'user') {
+            if ($authEnterpriseId && (int)optional($emp)->entreprise_id !== (int)$authEnterpriseId) return response()->json(['message' => 'Unauthorized'], 403);
+        }
         if (!in_array($authRole, ['supertenant','superadmin','admin'], true)) return response()->json(['message' => 'Unauthorized'], 403);
 
         $data = $request->validate([
@@ -180,8 +195,11 @@ class AbsenceController extends Controller
         $authEnterpriseId = request()->attributes->get('auth_enterprise_id');
         $authTenantId = request()->attributes->get('auth_tenant_id');
         $emp = \App\Models\Employe::with('entreprise')->find($absence->employe_id);
-        if ($authRole === 'admin' && (int)optional($emp)->entreprise_id !== (int)$authEnterpriseId) return response()->json(['message' => 'Unauthorized'], 403);
-        if ($authRole === 'superadmin' && $authTenantId && (int)optional(optional($emp)->entreprise)->tenant_id !== (int)$authTenantId) return response()->json(['message' => 'Unauthorized'], 403);
+        if (in_array($authRole, ['superadmin','admin'], true)) {
+            if ($authTenantId && (int)optional(optional($emp)->entreprise)->tenant_id !== (int)$authTenantId) return response()->json(['message' => 'Unauthorized'], 403);
+        } elseif ($authRole === 'user') {
+            if ($authEnterpriseId && (int)optional($emp)->entreprise_id !== (int)$authEnterpriseId) return response()->json(['message' => 'Unauthorized'], 403);
+        }
         if (!in_array($authRole, ['supertenant','superadmin','admin'], true)) return response()->json(['message' => 'Unauthorized'], 403);
 
         $absence->delete();

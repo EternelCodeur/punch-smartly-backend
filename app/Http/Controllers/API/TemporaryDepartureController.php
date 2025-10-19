@@ -33,13 +33,16 @@ class TemporaryDepartureController extends Controller
         $authTenantId = $request->attributes->get('auth_tenant_id');
         if ($authRole === 'supertenant') {
             // no restriction
-        } elseif ($authRole === 'superadmin') {
+        } elseif (in_array($authRole, ['superadmin','admin'], true)) {
+            // Admin & Superadmin: visibilité sur toutes les entreprises du même tenant
             if ($authTenantId) {
                 $q->whereHas('employe', function ($sub) use ($authTenantId) {
                     $sub->whereHas('entreprise', function($qq) use ($authTenantId) { $qq->where('tenant_id', $authTenantId); });
                 });
+            } else {
+                $q->whereRaw('1=0');
             }
-        } elseif (in_array($authRole, ['admin','user'], true)) {
+        } elseif ($authRole === 'user') {
             if ($authEnterpriseId) {
                 $q->whereHas('employe', function ($sub) use ($authEnterpriseId) {
                     $sub->where('entreprise_id', $authEnterpriseId);
@@ -75,13 +78,22 @@ class TemporaryDepartureController extends Controller
         $authRole = strtolower((string)$request->attributes->get('auth_role'));
         $authEnterpriseId = $request->attributes->get('auth_enterprise_id');
         $authTenantId = $request->attributes->get('auth_tenant_id');
-        if (!in_array($authRole, ['supertenant','superadmin','admin'], true)) {
+        if (!in_array($authRole, ['supertenant','superadmin','admin','user'], true)) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
         $emp = \App\Models\Employe::with('entreprise')->find($data['employe_id']);
         if (!$emp) return response()->json(['message' => 'Employé introuvable'], 404);
-        if ($authRole === 'admin' && (int)$emp->entreprise_id !== (int)$authEnterpriseId) return response()->json(['message' => 'Unauthorized'], 403);
-        if ($authRole === 'superadmin' && $authTenantId && (int)optional($emp->entreprise)->tenant_id !== (int)$authTenantId) return response()->json(['message' => 'Unauthorized'], 403);
+        if (in_array($authRole, ['superadmin','admin'], true)) {
+            // Admin/Superadmin: vérifier le tenant
+            if ($authTenantId && (int)optional($emp->entreprise)->tenant_id !== (int)$authTenantId) {
+                return response()->json(['message' => 'Unauthorized'], 403);
+            }
+        } elseif ($authRole === 'user') {
+            // User: limité à sa propre entreprise
+            if ($authEnterpriseId && (int)$emp->entreprise_id !== (int)$authEnterpriseId) {
+                return response()->json(['message' => 'Unauthorized'], 403);
+            }
+        }
 
         $today = now()->toDateString();
         $time = now()->format('H:i');
@@ -108,9 +120,18 @@ class TemporaryDepartureController extends Controller
         $authEnterpriseId = $request->attributes->get('auth_enterprise_id');
         $authTenantId = $request->attributes->get('auth_tenant_id');
         $emp = \App\Models\Employe::with('entreprise')->find($temporaryDeparture->employe_id);
-        if ($authRole === 'admin' && (int)optional($emp)->entreprise_id !== (int)$authEnterpriseId) return response()->json(['message' => 'Unauthorized'], 403);
-        if ($authRole === 'superadmin' && $authTenantId && (int)optional(optional($emp)->entreprise)->tenant_id !== (int)$authTenantId) return response()->json(['message' => 'Unauthorized'], 403);
-        if (!in_array($authRole, ['supertenant','superadmin','admin'], true)) return response()->json(['message' => 'Unauthorized'], 403);
+        if (in_array($authRole, ['superadmin','admin'], true)) {
+            // Admin/Superadmin: vérifier le tenant
+            if ($authTenantId && (int)optional(optional($emp)->entreprise)->tenant_id !== (int)$authTenantId) {
+                return response()->json(['message' => 'Unauthorized'], 403);
+            }
+        } elseif ($authRole === 'user') {
+            // User: limité à sa propre entreprise
+            if ($authEnterpriseId && (int)optional($emp)->entreprise_id !== (int)$authEnterpriseId) {
+                return response()->json(['message' => 'Unauthorized'], 403);
+            }
+        }
+        if (!in_array($authRole, ['supertenant','superadmin','admin','user'], true)) return response()->json(['message' => 'Unauthorized'], 403);
 
         if ($temporaryDeparture->return_time) {
             return response()->json(['message' => 'Retour déjà enregistré'], 422);
